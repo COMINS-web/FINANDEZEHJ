@@ -559,6 +559,13 @@ input[readonly]{opacity:.55;cursor:default}
 <div class="content active" id="tab-dashboard">
   <div class="page-title">Dashboard</div>
   <div class="page-sub">Da click en cualquier cuenta para ver su detalle completo</div>
+  <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px" id="dash-periodo-chips">
+    <button class="cob-chip" id="dp-hoy" onclick="setDashPeriodo('hoy')">Hoy</button>
+    <button class="cob-chip" id="dp-semana" onclick="setDashPeriodo('semana')">Semana</button>
+    <button class="cob-chip active" id="dp-mes" onclick="setDashPeriodo('mes')">Mes</button>
+    <button class="cob-chip" id="dp-año" onclick="setDashPeriodo('año')">Año</button>
+    <button class="cob-chip" id="dp-todo" onclick="setDashPeriodo('todo')">Todo</button>
+  </div>
   <div style="background:#EFF6FF;border:1px solid #BFDBFE;border-radius:9px;padding:10px 16px;margin-bottom:16px;font-size:12px;color:#2563EB;display:flex;align-items:center;gap:8px">
     <span>ℹ️</span><span><strong>Sistema de uso personal exclusivo.</strong> TDW · SJR · COMINS tienen sus propios sistemas independientes.</span>
   </div>
@@ -571,8 +578,8 @@ input[readonly]{opacity:.55;cursor:default}
     <div class="kpi-card"><div class="kpi-label">💰 Saldo disponible</div><div class="kpi-value" style="color:#27AE60" id="kpi-saldo">$0.00</div><div class="kpi-sub">Efectivo + bancos</div></div>
     <div class="kpi-card"><div class="kpi-label">💳 Deuda total</div><div class="kpi-value" style="color:#E74C3C" id="kpi-deuda">$0.00</div><div class="kpi-sub">Tarjetas + créditos</div></div>
     <div class="kpi-card"><div class="kpi-label">🤝 Por cobrar</div><div class="kpi-value" style="color:#C9A84C" id="kpi-cobrar">$0.00</div><div class="kpi-sub">Préstamos pendientes</div></div>
-    <div class="kpi-card"><div class="kpi-label">📤 Egresos del mes</div><div class="kpi-value" style="color:#4FC3F7" id="kpi-egresos">$0.00</div><div class="kpi-sub">Mes en curso</div></div>
-    <div class="kpi-card"><div class="kpi-label">📥 Ingresos del mes</div><div class="kpi-value" id="kpi-flujo" style="color:#27AE60">$0.00</div><div class="kpi-sub">Mes en curso</div></div>
+    <div class="kpi-card"><div class="kpi-label">📤 Egresos</div><div class="kpi-value" style="color:#4FC3F7" id="kpi-egresos">$0.00</div><div class="kpi-sub" id="kpi-egresos-sub">Este mes</div></div>
+    <div class="kpi-card"><div class="kpi-label">📥 Ingresos</div><div class="kpi-value" id="kpi-flujo" style="color:#27AE60">$0.00</div><div class="kpi-sub" id="kpi-flujo-sub">Este mes</div></div>
   </div>
 
   <!-- 💵 EFECTIVO -->
@@ -620,6 +627,8 @@ input[readonly]{opacity:.55;cursor:default}
   </div>
 
   <div class="cm-kpis" id="cm-kpis"></div>
+
+  <div class="section" style="margin-bottom:20px;display:none" id="cm-apartados-box"></div>
 
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:20px">
     <div class="section">
@@ -1323,12 +1332,15 @@ function calcKPIs(movs){
   const mv = movs || DB.movimientos;
   const ing=mv.filter(m=>m.tipo==='INGRESO').reduce((a,b)=>a+b.monto,0);
   const egr=mv.filter(m=>m.tipo==='EGRESO').reduce((a,b)=>a+b.monto,0);
-  const deudaTDC=DB.tarjetas.reduce((a,b)=>a+b.saldo,0);
-  const deudaCred=DB.creditos.reduce((a,b)=>a+b.saldo,0);
+  // Saldo disponible = suma real de cajas + cuentas débito activas (no el flujo de movimientos)
+  const saldoReal=(DB.cajasEfectivo||[]).filter(c=>c.activa!==false).reduce((a,b)=>a+b.saldo,0)
+                 +(DB.cuentasDebito||[]).filter(c=>c.activa!==false).reduce((a,b)=>a+b.saldo,0);
+  const deudaTDC=DB.tarjetas.filter(t=>t.activa!==false&&t.estatus!=='ASOCIACIÓN'&&t.estatus!=='LIQUIDADO').reduce((a,b)=>a+b.saldo,0);
+  const deudaCred=DB.creditos.filter(c=>c.estatus!=='LIQUIDADO').reduce((a,b)=>a+(b.saldo||0),0);
   const deudaPrest=DB.prestamos.filter(p=>p.direccion==='recibido'&&p.abonado<p.monto).reduce((a,b)=>a+(b.monto-b.abonado),0);
   const deuda=deudaTDC+deudaCred+deudaPrest;
   const cobrar=DB.prestamos.filter(p=>(p.direccion==='otorgado'||!p.direccion)&&p.abonado<p.monto).reduce((a,b)=>a+(b.monto-b.abonado),0);
-  return{saldo:ing-egr,deuda,cobrar,egresos:egr,flujo:ing,deudaPrest};
+  return{saldo:saldoReal,deuda,cobrar,egresos:egr,flujo:ing,deudaPrest};
 }
 
 // ─── RENDER ALL ───────────────────────────────────────────────────────────────
@@ -1665,6 +1677,12 @@ function generarReporteVisual(periodo){
   const urgCred=DB.creditos.filter(c=>c.estatus==='URGENTE').length;
   const urgTotal=urgPagos+urgTDC+urgCred;
 
+  // No contabilizado del período
+  const noContab=movs.filter(m=>m.cat==='No contabilizado');
+  const noContabEgr=noContab.filter(m=>m.tipo==='EGRESO').reduce((a,b)=>a+b.monto,0);
+  const noContabIng=noContab.filter(m=>m.tipo==='INGRESO').reduce((a,b)=>a+b.monto,0);
+  const noContabNeto=noContabEgr-noContabIng;
+
   const labels={hoy:'Hoy',semana:'Últimos 7 días',mes:'Este mes',año:'Este año',todo:'Todo el historial'};
 
   // Donut de egresos por categoría (período seleccionado)
@@ -1724,12 +1742,13 @@ function generarReporteVisual(periodo){
     </div>
 
     <!-- KPIs POSICIÓN ACTUAL -->
-    <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:13px;margin-bottom:20px">
+    <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:13px;margin-bottom:20px">
       ${kpi('💵','Efectivo',peso(efectivo),'#16A34A',(DB.cajasEfectivo||[]).filter(c=>c.activa!==false).length+' cajas')}
       ${kpi('🏦','Bancos',peso(bancos),'#2563EB',(DB.cuentasDebito||[]).filter(c=>c.activa!==false).length+' cuentas')}
       ${kpi('💳','Deuda TDC+créditos',peso(deudaTDC+deudaCred),'#DC2626','Activas')}
       ${kpi('🤝','Me deben',peso(meDeben),'#B45309','Por cobrar')}
       ${kpi('🔴','Urgentes',urgTotal,'#DC2626','Atención inmediata')}
+      ${kpi('❔','No contabilizado',peso(Math.abs(noContabNeto)),'#7C3AED',labels[periodo]+' · sin detalle')}
     </div>
 
     <!-- GRÁFICAS -->
@@ -2138,6 +2157,7 @@ function renderDashboardCuentas(){
 
 // ─── MÓDULO DE CUENTA ─────────────────────────────────────────────────────────
 let cmActivo = null; // {tipo, ref}
+let cmfModo = 'EGRESO';
 let cmPeriodo = 'mes';
 
 function volverDashboard(){ showTab('dashboard'); }
@@ -2271,11 +2291,47 @@ function renderModuloCuenta(){
   const egr=movs.filter(m=>m.tipo==='EGRESO').reduce((a,b)=>a+b.monto,0);
   const mayor=movs.filter(m=>m.tipo==='EGRESO').sort((a,b)=>b.monto-a.monto)[0];
 
+  const saldoEditable = tipo==='caja'||tipo==='debito';
   document.getElementById('cm-kpis').innerHTML=`
-    <div class="cm-kpi"><div class="cm-kpi-label">${esTDC?'Deuda actual':'Saldo actual'}</div><div class="cm-kpi-val" style="color:${saldoCol}">${peso(saldo)}</div></div>
+    <div class="cm-kpi">
+      <div class="cm-kpi-label">${esTDC?'Deuda actual':'Saldo actual'}</div>
+      <div class="cm-kpi-val" style="color:${saldoCol}">${peso(saldo)}</div>
+      ${saldoEditable?`<button onclick="iniciarEditarSaldoCM()" style="margin-top:6px;background:none;border:1px solid #E2E8F0;border-radius:7px;padding:3px 10px;font-size:10px;color:#64748B;cursor:pointer">✏️ Editar saldo</button>`:''}
+    </div>
     <div class="cm-kpi"><div class="cm-kpi-label">${esTDC?'Pagos del período':'Ingresos'}</div><div class="cm-kpi-val" style="color:#16A34A">${peso(ing)}</div></div>
     <div class="cm-kpi"><div class="cm-kpi-label">${esTDC?'Cargos del período':'Egresos'}</div><div class="cm-kpi-val" style="color:#DC2626">${peso(egr)}</div></div>
     <div class="cm-kpi"><div class="cm-kpi-label">Egreso más grande</div><div class="cm-kpi-val" style="color:#0F172A;font-size:15px">${mayor?peso(mayor.monto)+' · '+esc(mayor.concepto).slice(0,18):'—'}</div></div>`;
+
+  // ── APARTADOS (solo cuentas débito) ──
+  const apartadosBox=document.getElementById('cm-apartados-box');
+  if(apartadosBox){
+    if(tipo==='debito'){
+      const cd=(DB.cuentasDebito||[]).find(c=>c.banco===ref);
+      const aps=(cd&&cd.apartados)||[];
+      apartadosBox.style.display='block';
+      apartadosBox.innerHTML=`
+        <div class="section-header"><div class="section-title">📂 Apartados de esta cuenta</div><button class="btn-primary" style="padding:6px 14px;font-size:12px" onclick="toggleApartadoForm()">+ Nuevo apartado</button></div>
+        <div id="apartado-form" style="display:none;padding:14px 20px;border-bottom:1px solid #E2E8F0;background:#F8FAFC">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
+            <div class="form-group"><label class="form-label">Nombre</label><input type="text" id="apf-nombre" placeholder="ej. Impuestos, Vacaciones..."></div>
+            <div class="form-group"><label class="form-label">Saldo inicial ($)</label><input type="number" id="apf-saldo" step="0.01" placeholder="0.00"></div>
+          </div>
+          <button class="btn-primary" style="padding:8px 18px;font-size:13px" onclick="agregarApartado()">+ Agregar</button>
+        </div>
+        <div style="padding:14px 20px">
+          ${aps.length?aps.map((a,i)=>`
+            <div style="display:flex;justify-content:space-between;align-items:center;padding:9px 0;border-bottom:1px solid #F1F5F9">
+              <span style="font-size:13px;color:#374151"><strong>${esc(a.nombre)}</strong></span>
+              <div style="display:flex;gap:10px;align-items:center">
+                <strong style="color:#2563EB;font-size:14px">${peso(a.saldo)}</strong>
+                <button class="btn-sm bs-del" onclick="eliminarApartado(${i})">✕</button>
+              </div>
+            </div>`).join(''):'<div style="color:#94A3B8;font-style:italic;font-size:13px;text-align:center;padding:10px 0">Sin apartados — crea uno para separar el dinero de esta cuenta</div>'}
+        </div>`;
+    } else {
+      apartadosBox.style.display='none';
+    }
+  }
 
   // Donut de egresos por categoría
   const porCat={};
@@ -2336,23 +2392,72 @@ function toggleCMForm(){
   const abierto=sec.style.display!=='none';
   if(abierto){ sec.style.display='none'; return; }
   sec.style.display='block';
+  cmfModo='EGRESO';
+  renderCMFormBody();
+}
+
+function setCMModo(modo){
+  cmfModo=modo;
+  renderCMFormBody();
+}
+
+function renderCMFormBody(){
   const {tipo,ref}=cmActivo;
   const catsHTML=DB.catalogos.cats.map(c=>`<option>${esc(c)}</option>`).join('');
   const hoyStr=hoy.toISOString().split('T')[0];
   const c=document.getElementById('cm-form-container');
-  c.innerHTML=`
-    <div style="display:flex;gap:8px;margin-bottom:14px">
-      <button id="cmf-egreso" onclick="setCMTipo('EGRESO')" style="flex:1;padding:9px;border-radius:9px;border:2px solid #DC2626;background:#FEF2F2;color:#DC2626;font-weight:700;font-size:13px;cursor:pointer">📤 Gasto</button>
-      <button id="cmf-ingreso" onclick="setCMTipo('INGRESO')" style="flex:1;padding:9px;border-radius:9px;border:1px solid #E2E8F0;background:#FFF;color:#64748B;font-weight:700;font-size:13px;cursor:pointer">📥 Ingreso</button>
-      <input type="hidden" id="cmf-tipo" value="EGRESO">
-    </div>
-    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:12px">
-      <div class="form-group"><label class="form-label">Monto ($)</label><input type="number" id="cmf-monto" step="0.01" placeholder="0.00" style="font-weight:700;font-size:16px"></div>
-      <div class="form-group"><label class="form-label">Categoría</label><select id="cmf-cat">${catsHTML}</select></div>
-      <div class="form-group"><label class="form-label">Fecha</label><input type="date" id="cmf-fecha" value="${hoyStr}"></div>
-    </div>
-    <div class="form-group" style="margin-bottom:12px"><label class="form-label">Concepto</label><input type="text" id="cmf-concepto" placeholder="Descripción breve..."></div>
-    <button class="btn-primary" style="padding:11px 24px;font-size:14px" onclick="registrarCMMovimiento()">+ Registrar</button>`;
+  const btn=(m,label,color,bg)=>`<button onclick="setCMModo('${m}')" style="flex:1;padding:9px;border-radius:9px;border:2px solid ${cmfModo===m?color:'#E2E8F0'};background:${cmfModo===m?bg:'#FFF'};color:${cmfModo===m?color:'#64748B'};font-weight:700;font-size:13px;cursor:pointer">${label}</button>`;
+
+  const apEl=(DB.cuentasDebito||[]).find(x=>x.banco===ref);
+  const apartados=apEl&&apEl.apartados&&apEl.apartados.length?apEl.apartados:null;
+  const apartadoSelect=apartados?`<div class="form-group"><label class="form-label">Apartado (opcional)</label><select id="cmf-apartado"><option value="">— General —</option>${apartados.map(a=>`<option>${esc(a.nombre)}</option>`).join('')}</select></div>`:'';
+
+  if(cmfModo==='TRASLADO'){
+    const otras=getCuentasDinamicas().filter(n=>n!==ref);
+    c.innerHTML=`
+      <div style="display:flex;gap:8px;margin-bottom:14px">
+        ${btn('EGRESO','📤 Gasto','#DC2626','#FEF2F2')}${btn('INGRESO','📥 Ingreso','#16A34A','#F0FDF4')}${btn('TRASLADO','🔄 Traslado','#2563EB','#EFF6FF')}
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
+        <div class="form-group"><label class="form-label">Monto ($)</label><input type="number" id="cmf-monto" step="0.01" placeholder="0.00" style="font-weight:700;font-size:16px"></div>
+        <div class="form-group"><label class="form-label">Fecha</label><input type="date" id="cmf-fecha" value="${hoyStr}"></div>
+      </div>
+      <div class="form-group" style="margin-bottom:12px"><label class="form-label">Trasladar a</label><select id="cmf-destino">${otras.map(n=>`<option>${esc(n)}</option>`).join('')}</select></div>
+      <div class="form-group" style="margin-bottom:12px"><label class="form-label">Concepto</label><input type="text" id="cmf-concepto" placeholder="ej. Traslado a BBVA débito" value="Traslado ${esc(ref)} → "></div>
+      <button class="btn-primary" style="padding:11px 24px;font-size:14px" onclick="registrarCMTraslado()">🔄 Registrar traslado</button>`;
+  } else {
+    c.innerHTML=`
+      <div style="display:flex;gap:8px;margin-bottom:14px">
+        ${btn('EGRESO','📤 Gasto','#DC2626','#FEF2F2')}${btn('INGRESO','📥 Ingreso','#16A34A','#F0FDF4')}${btn('TRASLADO','🔄 Traslado','#2563EB','#EFF6FF')}
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:12px">
+        <div class="form-group"><label class="form-label">Monto ($)</label><input type="number" id="cmf-monto" step="0.01" placeholder="0.00" style="font-weight:700;font-size:16px"></div>
+        <div class="form-group"><label class="form-label">Categoría</label><select id="cmf-cat">${catsHTML}</select></div>
+        <div class="form-group"><label class="form-label">Fecha</label><input type="date" id="cmf-fecha" value="${hoyStr}"></div>
+      </div>
+      ${apartadoSelect}
+      <div class="form-group" style="margin-bottom:12px"><label class="form-label">Concepto</label><input type="text" id="cmf-concepto" placeholder="Descripción breve..."></div>
+      <button class="btn-primary" style="padding:11px 24px;font-size:14px" onclick="registrarCMMovimiento()">+ Registrar</button>`;
+  }
+}
+
+function registrarCMTraslado(){
+  if(!cmActivo) return;
+  const monto=parseFloat(document.getElementById('cmf-monto')?.value)||0;
+  const destino=document.getElementById('cmf-destino')?.value||'';
+  const fecha=document.getElementById('cmf-fecha')?.value||hoy.toISOString().split('T')[0];
+  const origen=cmActivo.ref;
+  let concepto=document.getElementById('cmf-concepto')?.value?.trim()||`Traslado ${origen} → ${destino}`;
+  if(!monto||!destino){ mostrarToast('⚠️ Completa monto y destino','rgba(220,38,38,0.95)'); return; }
+  if(origen===destino){ mostrarToast('⚠️ Origen y destino son iguales','rgba(220,38,38,0.95)'); return; }
+  if(!validarSaldo(origen,monto)) return;
+  DB.movimientos.push({id:'FE-'+(++folioN),fecha,monto,tipo:'EGRESO',cuenta:origen,cat:'Traslado entre cuentas',concepto,quien:'EHJ — Director',notas:'',vinculo:'traslado'});
+  DB.movimientos.push({id:'FI-'+(++folioN),fecha,monto,tipo:'INGRESO',cuenta:destino,cat:'Traslado entre cuentas',concepto,quien:'EHJ — Director',notas:'',vinculo:'traslado'});
+  actualizarSaldoCuenta(origen,monto,'EGRESO');
+  actualizarSaldoCuenta(destino,monto,'INGRESO');
+  document.getElementById('cm-form-section').style.display='none';
+  guardarDB(); renderAll();
+  mostrarToast(`✅ Traslado registrado — ${peso(monto)}`);
 }
 
 function setCMTipo(t){
@@ -2368,12 +2473,20 @@ function registrarCMMovimiento(){
   const cat=document.getElementById('cmf-cat')?.value||'';
   const fecha=document.getElementById('cmf-fecha')?.value||hoy.toISOString().split('T')[0];
   const concepto=document.getElementById('cmf-concepto')?.value?.trim()||'';
-  const tipo=document.getElementById('cmf-tipo')?.value||'EGRESO';
+  const tipo=cmfModo==='INGRESO'?'INGRESO':'EGRESO';
+  const apartado=document.getElementById('cmf-apartado')?.value||'';
   if(!monto||!concepto){ mostrarToast('⚠️ Completa monto y concepto','rgba(220,38,38,0.95)'); return; }
   const cuenta=cmActivo.ref;
   if(tipo==='EGRESO'&&!validarSaldo(cuenta,monto)) return;
-  DB.movimientos.push({id:(tipo==='INGRESO'?'FI-':'FE-')+(++folioN),fecha,monto,tipo,cuenta,cat,concepto,quien:'EHJ — Director',notas:'',vinculo:null});
+  DB.movimientos.push({id:(tipo==='INGRESO'?'FI-':'FE-')+(++folioN),fecha,monto,tipo,cuenta,cat,concepto,quien:'EHJ — Director',notas:apartado?('Apartado: '+apartado):'',vinculo:null,apartado:apartado||null});
   actualizarSaldoCuenta(cuenta,monto,tipo);
+  if(apartado){
+    const cd=(DB.cuentasDebito||[]).find(x=>x.banco===cuenta);
+    if(cd&&cd.apartados){
+      const ap=cd.apartados.find(a=>a.nombre===apartado);
+      if(ap) ap.saldo=Math.max(0, ap.saldo + (tipo==='INGRESO'?monto:-monto));
+    }
+  }
   document.getElementById('cm-form-section').style.display='none';
   guardarDB(); renderAll();
   mostrarToast(`✅ ${tipo==='INGRESO'?'Ingreso':'Gasto'} registrado — ${peso(monto)}`);
@@ -2488,6 +2601,113 @@ function togglePagoFijoForm(){
   el.style.display = el.style.display==='none' ? 'block' : 'none';
 }
 
+
+// ─── EDITAR SALDO DE CUENTA (con ajuste no contabilizado) ─────────────────────
+function iniciarEditarSaldoCM(){
+  if(!cmActivo) return;
+  const {tipo,ref}=cmActivo;
+  let saldoActual=0;
+  if(tipo==='caja'){ const cj=(DB.cajasEfectivo||[]).find(c=>c.nombre===ref); saldoActual=cj?cj.saldo:0; }
+  else if(tipo==='debito'){ const cd=(DB.cuentasDebito||[]).find(c=>c.banco===ref); saldoActual=cd?cd.saldo:0; }
+  abrirModal('Actualizar saldo — '+ref, `
+    <div style="background:#F8FAFC;border:1px solid #E2E8F0;border-radius:10px;padding:14px 16px;margin-bottom:16px">
+      <div style="font-size:12px;color:#64748B">Saldo actual en el sistema</div>
+      <div style="font-size:20px;font-weight:800;color:#0F172A">${peso(saldoActual)}</div>
+    </div>
+    <div class="form-group" style="margin-bottom:14px">
+      <label class="form-label">Nuevo saldo real ($)</label>
+      <input type="number" id="es-nuevo-saldo" step="0.01" placeholder="0.00" style="font-size:18px;font-weight:700">
+    </div>
+    <div style="font-size:12px;color:#94A3B8;margin-bottom:6px">Si hay diferencia con lo registrado, te preguntaremos si quieres anotarla como gasto/ingreso no contabilizado — sin pedirte más detalle.</div>
+  `, ()=>confirmarNuevoSaldoCM(saldoActual));
+}
+
+function confirmarNuevoSaldoCM(saldoActual){
+  const nuevo=parseFloat(document.getElementById('es-nuevo-saldo')?.value);
+  if(isNaN(nuevo)){ mostrarToast('⚠️ Ingresa un monto válido','rgba(220,38,38,0.95)'); return; }
+  cerrarModal();
+  const diff = nuevo - saldoActual;
+  if(Math.abs(diff) < 0.01){
+    aplicarNuevoSaldoCM(nuevo, false, 0);
+    return;
+  }
+  const esFalta = diff < 0;
+  abrirModal('Hay una diferencia de '+peso(Math.abs(diff)), `
+    <div style="background:${esFalta?'#FEF2F2':'#F0FDF4'};border:1px solid ${esFalta?'#FCA5A5':'#86EFAC'};border-radius:10px;padding:14px 16px;margin-bottom:16px">
+      <div style="font-size:13px;color:#374151">Saldo anterior: <strong>${peso(saldoActual)}</strong></div>
+      <div style="font-size:13px;color:#374151">Saldo nuevo: <strong>${peso(nuevo)}</strong></div>
+      <div style="font-size:14px;font-weight:800;color:${esFalta?'#DC2626':'#16A34A'};margin-top:6px">${esFalta?'Falta':'Sobra'}: ${peso(Math.abs(diff))}</div>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:10px">
+      <button onclick="aplicarNuevoSaldoCM(${nuevo},true,${diff})" style="text-align:left;padding:14px 16px;border:2px solid ${esFalta?'#DC2626':'#16A34A'};background:${esFalta?'#FEF2F2':'#F0FDF4'};border-radius:12px;cursor:pointer">
+        <div style="font-weight:800;color:${esFalta?'#DC2626':'#16A34A'};font-size:14px">✅ Sí, registrar como "${esFalta?'Gasto':'Ingreso'} no contabilizado"</div>
+        <div style="font-size:12px;color:#475569;margin-top:3px">Se agrega un movimiento por ${peso(Math.abs(diff))} sin pedirte más detalle, y aparecerá reflejado en el Reporte.</div>
+      </button>
+      <button onclick="aplicarNuevoSaldoCM(${nuevo},false,0)" style="text-align:left;padding:14px 16px;border:2px solid #64748B;background:#F8FAFC;border-radius:12px;cursor:pointer">
+        <div style="font-weight:800;color:#374151;font-size:14px">📝 No, solo ajustar el saldo</div>
+        <div style="font-size:12px;color:#475569;margin-top:3px">Se actualiza el número sin crear ningún movimiento.</div>
+      </button>
+    </div>`, null, true);
+}
+
+function aplicarNuevoSaldoCM(nuevo, registrarAjuste, diff){
+  cerrarModal();
+  if(!cmActivo) return;
+  const {tipo,ref}=cmActivo;
+  if(tipo==='caja'){ const cj=(DB.cajasEfectivo||[]).find(c=>c.nombre===ref); if(cj){ cj.saldo=nuevo; cj.actualizado=hoy.toISOString().split('T')[0]; } }
+  else if(tipo==='debito'){ const cd=(DB.cuentasDebito||[]).find(c=>c.banco===ref); if(cd){ cd.saldo=nuevo; cd.actualizado=hoy.toISOString().split('T')[0]; } }
+  if(registrarAjuste && Math.abs(diff)>=0.01){
+    const tipoMov = diff<0 ? 'EGRESO' : 'INGRESO';
+    DB.movimientos.push({
+      id:'AJU-'+(++folioN), fecha:hoy.toISOString().split('T')[0], monto:Math.abs(diff),
+      tipo:tipoMov, cuenta:ref, cat:'No contabilizado',
+      concepto:'Ajuste de saldo — no contabilizado', quien:'EHJ — Director', notas:'', vinculo:'ajuste'
+    });
+  }
+  guardarDB(); renderAll();
+  mostrarToast('✅ Saldo actualizado'+(registrarAjuste?' — ajuste registrado':''));
+}
+
+// ─── APARTADOS DE CUENTAS DÉBITO ──────────────────────────────────────────────
+function toggleApartadoForm(){
+  const el=document.getElementById('apartado-form');
+  if(!el) return;
+  el.style.display = el.style.display==='none' ? 'block' : 'none';
+}
+
+function agregarApartado(){
+  if(!cmActivo) return;
+  const nombre=document.getElementById('apf-nombre')?.value?.trim()||'';
+  const saldo=parseFloat(document.getElementById('apf-saldo')?.value)||0;
+  if(!nombre){ mostrarToast('⚠️ Ingresa el nombre del apartado','rgba(220,38,38,0.95)'); return; }
+  const cd=(DB.cuentasDebito||[]).find(c=>c.banco===cmActivo.ref);
+  if(!cd) return;
+  if(!cd.apartados) cd.apartados=[];
+  cd.apartados.push({nombre, saldo});
+  document.getElementById('apartado-form').style.display='none';
+  guardarDB(); renderAll();
+  mostrarToast('✅ Apartado "'+nombre+'" creado');
+}
+
+function eliminarApartado(i){
+  if(!cmActivo) return;
+  if(!confirm('¿Eliminar este apartado? El saldo regresa a la cuenta general.')) return;
+  const cd=(DB.cuentasDebito||[]).find(c=>c.banco===cmActivo.ref);
+  if(!cd||!cd.apartados) return;
+  cd.apartados.splice(i,1);
+  guardarDB(); renderAll();
+  mostrarToast('🗑️ Apartado eliminado');
+}
+
+
+// ─── DASHBOARD: SELECTOR DE PERÍODO PARA KPIs ────────────────────────────────
+function setDashPeriodo(tipo){
+  setRango(tipo);
+  ['hoy','semana','mes','año','todo'].forEach(t=>{
+    const el=document.getElementById('dp-'+t); if(el) el.classList.toggle('active', t===tipo);
+  });
+}
+
 function renderAll(){
   actualizarUrgentes();
   const movsFiltrados=movsEnRango();
@@ -2503,6 +2723,10 @@ function renderAll(){
   if(efectivoEl) efectivoEl.textContent=peso(saldoCajasKPI);
   const kpiEgrEl=document.getElementById('kpi-egresos'); if(kpiEgrEl) kpiEgrEl.textContent=peso(k.egresos);
   const kf=document.getElementById('kpi-flujo'); if(kf){kf.textContent=peso(k.flujo);kf.style.color='#27AE60';}
+  const periodoLabels={hoy:'Hoy',semana:'Esta semana',mes:'Este mes',año:'Este año',todo:'Todo el historial'};
+  const pl=periodoLabels[rangoActual.tipo]||'Este mes';
+  const egrSubEl=document.getElementById('kpi-egresos-sub'); if(egrSubEl) egrSubEl.textContent=pl;
+  const flujoSubEl=document.getElementById('kpi-flujo-sub'); if(flujoSubEl) flujoSubEl.textContent=pl;
   poblarFiltrosCuenta();poblarFiltrosCat();
   const urg=DB.tarjetas.filter(t=>t.estatus==='URGENTE');
   const al=document.getElementById('alert-urgente');
@@ -4252,7 +4476,12 @@ function registrarFlujoTraslado(){
 }
 
 // ─── RANGO DE FECHAS ──────────────────────────────────────────────────────────
-let rangoActual = {tipo:'todo', desde:null, hasta:null};
+let rangoActual = (function(){
+  const ahora=new Date();
+  const desde=`${ahora.getFullYear()}-${String(ahora.getMonth()+1).padStart(2,'0')}-01`;
+  const hasta=ahora.toISOString().split('T')[0];
+  return {tipo:'mes', desde, hasta};
+})();
 
 function setRango(tipo){
   const ahora = new Date();
